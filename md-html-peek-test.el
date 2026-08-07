@@ -20,6 +20,18 @@
     (should (string-match-p "class=\"language-elisp\"" html))
     (should (string-match-p "(message &quot;hi&quot;)" html))))
 
+(ert-deftest md-html-peek-renders-nested-unordered-lists ()
+  (let ((html (md-html-peek-render-string "- parent\n  - child\n- sibling" "sample.md")))
+    (should (string-match-p
+             "<ul>\n<li>parent<ul>\n<li>child</li>\n</ul>\n</li>\n<li>sibling</li>\n</ul>"
+             html))))
+
+(ert-deftest md-html-peek-renders-nested-mixed-lists ()
+  (let ((html (md-html-peek-render-string "1. parent\n   - child\n2. sibling" "sample.md")))
+    (should (string-match-p
+             "<ol>\n<li>parent<ul>\n<li>child</li>\n</ul>\n</li>\n<li>sibling</li>\n</ol>"
+             html))))
+
 (ert-deftest md-html-peek-renders-inline-formatting-without-markers ()
   (let ((html (md-html-peek-render-string
                "Text with **bold**, *em*, `code`, and [link](https://example.com)."

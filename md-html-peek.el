@@ -144,7 +144,7 @@ This command does not require the buffer to be saved."
   "Render Markdown LINES into HTML blocks."
   (let ((html '())
         (paragraph '())
-        (list-type nil)
+        (list-stack nil)
         (blockquote '())
         (code-lines '())
         (code-lang nil)
@@ -160,9 +160,41 @@ This command does not require the buffer to be saved."
             (setq paragraph nil)))
          (flush-list
           ()
-          (when list-type
-            (emit (format "</%s>\n" list-type))
-            (setq list-type nil)))
+          (while list-stack
+            (when (plist-get (car list-stack) :li-open)
+              (emit "</li>\n"))
+            (emit (format "</%s>\n" (plist-get (car list-stack) :type)))
+            (setq list-stack (cdr list-stack))))
+         (open-list
+          (type indent)
+          (emit (format "<%s>\n" type))
+          (push (list :type type :indent indent :li-open nil) list-stack))
+         (close-list-level
+          ()
+          (when (plist-get (car list-stack) :li-open)
+            (emit "</li>\n"))
+          (emit (format "</%s>\n" (plist-get (car list-stack) :type)))
+          (setq list-stack (cdr list-stack)))
+         (close-list-item
+          ()
+          (when (plist-get (car list-stack) :li-open)
+            (emit "</li>\n")
+            (setcar list-stack (plist-put (car list-stack) :li-open nil))))
+         (ensure-list
+          (type indent)
+          (while (and list-stack
+                      (< indent (plist-get (car list-stack) :indent)))
+            (close-list-level))
+          (cond
+           ((null list-stack)
+            (open-list type indent))
+           ((> indent (plist-get (car list-stack) :indent))
+            (open-list type indent))
+           ((not (equal type (plist-get (car list-stack) :type)))
+            (close-list-level)
+            (open-list type indent))
+           (t
+            (close-list-item))))
          (flush-blockquote
           ()
           (when blockquote
@@ -230,26 +262,20 @@ This command does not require the buffer to be saved."
                             (md-html-peek--marker marker)
                             (md-html-peek--inline text)
                             level))))
-           ((string-match "\\`[[:space:]]*\\([-+*]\\)[[:space:]]+\\(.+\\)\\'" line)
+           ((string-match "\\`\\([[:space:]]*\\)\\([-+*]\\)[[:space:]]+\\(.+\\)\\'" line)
             (flush-paragraph)
             (flush-blockquote)
-            (unless (equal list-type "ul")
-              (flush-list)
-              (setq list-type "ul")
-              (emit "<ul>\n"))
+            (ensure-list "ul" (md-html-peek--indent-width (match-string 1 line)))
             (emit (concat "<li>"
-                          (md-html-peek--inline (match-string 2 line))
-                          "</li>\n")))
-           ((string-match "\\`[[:space:]]*\\([0-9]+\\.\\)[[:space:]]+\\(.+\\)\\'" line)
+                          (md-html-peek--inline (match-string 3 line))))
+            (setcar list-stack (plist-put (car list-stack) :li-open t)))
+           ((string-match "\\`\\([[:space:]]*\\)\\([0-9]+\\.\\)[[:space:]]+\\(.+\\)\\'" line)
             (flush-paragraph)
             (flush-blockquote)
-            (unless (equal list-type "ol")
-              (flush-list)
-              (setq list-type "ol")
-              (emit "<ol>\n"))
+            (ensure-list "ol" (md-html-peek--indent-width (match-string 1 line)))
             (emit (concat "<li>"
-                          (md-html-peek--inline (match-string 2 line))
-                          "</li>\n")))
+                          (md-html-peek--inline (match-string 3 line))))
+            (setcar list-stack (plist-put (car list-stack) :li-open t)))
            ((string-match "\\`[[:space:]]*>[[:space:]]?\\(.*\\)\\'" line)
             (flush-paragraph)
             (flush-list)
@@ -265,6 +291,12 @@ This command does not require the buffer to be saved."
         (flush-code))
       (flush-open-blocks)
       (apply #'concat (nreverse html)))))
+
+(defun md-html-peek--indent-width (indent)
+  "Return display width for Markdown list INDENT."
+  (let ((width 0))
+    (dolist (char (string-to-list (or indent "")) width)
+      (setq width (+ width (if (= char ?\t) 4 1))))))
 
 (defun md-html-peek--table-start-p (line remaining-lines)
   "Return non-nil when LINE and REMAINING-LINES start a Markdown table."
