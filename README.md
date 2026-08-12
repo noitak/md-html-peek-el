@@ -36,6 +36,7 @@ M-x md-html-peek-open-buffer
 - Generates a standalone HTML file with embedded CSS
 - Opens the generated file with `browse-url-of-file`
 - Writes output to a temporary directory by default
+- Shows a clickable heading list on the left side of the HTML preview
 - Supports headings, paragraphs, unordered lists, ordered lists, blockquotes,
   fenced code blocks, emphasis, links, images, horizontal rules, and tables
 - Shows structural markers, such as heading markers, in the HTML output
@@ -48,6 +49,7 @@ M-x md-html-peek-open-buffer
 (setq md-html-peek-output-directory "~/tmp/markdown-preview/")
 (setq md-html-peek-css-theme 'dark)
 (setq md-html-peek-show-markdown-markers t)
+(setq md-html-peek-show-heading-list t)
 ```
 
 ## Verification

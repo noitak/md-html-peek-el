@@ -41,6 +41,11 @@ When nil, use a temporary directory."
   :type 'boolean
   :group 'md-html-peek)
 
+(defcustom md-html-peek-show-heading-list t
+  "When non-nil, show a clickable heading list beside generated HTML."
+  :type 'boolean
+  :group 'md-html-peek)
+
 (defcustom md-html-peek-css-theme 'light
   "Theme used in generated HTML."
   :type '(choice (const :tag "Light" light)
@@ -100,7 +105,8 @@ This command does not require the buffer to be saved."
 
 (defun md-html-peek-render-string (markdown title)
   "Return a self-contained HTML document for MARKDOWN named TITLE."
-  (let ((body (md-html-peek--render-blocks (split-string markdown "\n"))))
+  (let* ((headings (md-html-peek--extract-headings markdown))
+         (body (md-html-peek--render-blocks (split-string markdown "\n") headings)))
     (concat "<!doctype html>\n"
             "<html lang=\"ja\">\n"
             "<head>\n"
@@ -110,12 +116,17 @@ This command does not require the buffer to be saved."
             "<style>\n" (md-html-peek--css) "\n</style>\n"
             "</head>\n"
             "<body>\n"
+            "<div class=\"md-html-peek-shell\">\n"
+            (if (and md-html-peek-show-heading-list headings)
+                (md-html-peek--render-heading-list headings)
+              "")
             "<main class=\"md-html-peek-document\">\n"
             "<div class=\"document-meta\">"
             (md-html-peek--escape-html (abbreviate-file-name title))
             "</div>\n"
             body
             "\n</main>\n"
+            "</div>\n"
             "</body>\n"
             "</html>\n")))
 
@@ -140,7 +151,7 @@ This command does not require the buffer to be saved."
                   (expand-file-name "md-html-peek/" temporary-file-directory))))
     (expand-file-name (concat safe-base ".html") dir)))
 
-(defun md-html-peek--render-blocks (lines)
+(defun md-html-peek--render-blocks (lines headings)
   "Render Markdown LINES into HTML blocks."
   (let ((html '())
         (paragraph '())
@@ -148,7 +159,8 @@ This command does not require the buffer to be saved."
         (blockquote '())
         (code-lines '())
         (code-lang nil)
-        (in-code nil))
+        (in-code nil)
+        (remaining-headings (copy-sequence headings)))
     (cl-labels
         ((emit (text) (push text html))
          (flush-paragraph
@@ -256,9 +268,12 @@ This command does not require the buffer to be saved."
             (flush-open-blocks)
             (let* ((marker (match-string 1 line))
                    (level (length marker))
-                   (text (match-string 2 line)))
-              (emit (format "<h%d>%s%s</h%d>\n"
+                   (text (match-string 2 line))
+                   (heading (pop remaining-headings))
+                   (id (plist-get heading :id)))
+              (emit (format "<h%d id=\"%s\">%s%s</h%d>\n"
                             level
+                            (md-html-peek--escape-html-attribute id)
                             (md-html-peek--marker marker)
                             (md-html-peek--inline text)
                             level))))
@@ -291,6 +306,62 @@ This command does not require the buffer to be saved."
         (flush-code))
       (flush-open-blocks)
       (apply #'concat (nreverse html)))))
+
+(defun md-html-peek--extract-headings (markdown)
+  "Return heading metadata parsed from MARKDOWN."
+  (let ((lines (split-string markdown "\n"))
+        (headings '())
+        (seen (make-hash-table :test #'equal))
+        (in-code nil))
+    (dolist (line lines (nreverse headings))
+      (cond
+       (in-code
+        (when (string-match-p "\\`[[:space:]]*```[[:space:]]*\\'" line)
+          (setq in-code nil)))
+       ((string-match-p "\\`[[:space:]]*```\\([^`]*\\)[[:space:]]*\\'" line)
+        (setq in-code t))
+       ((and (string-match "\\`\\(#+\\)[[:space:]]+\\(.+\\)\\'" line)
+             (<= (length (match-string 1 line)) 6))
+        (let* ((level (length (match-string 1 line)))
+               (text (match-string 2 line))
+               (id (md-html-peek--unique-heading-id text seen)))
+          (push (list :level level :text text :id id) headings)))))))
+
+(defun md-html-peek--unique-heading-id (text seen)
+  "Return a unique HTML id for heading TEXT, recording it in SEEN."
+  (let* ((base (md-html-peek--slugify text))
+         (count (gethash base seen 0)))
+    (puthash base (1+ count) seen)
+    (if (zerop count)
+        base
+      (format "%s-%d" base (1+ count)))))
+
+(defun md-html-peek--slugify (text)
+  "Return a readable slug for heading TEXT."
+  (let* ((without-links (replace-regexp-in-string
+                         "\\[\\([^]]+\\)\\](\\([^)\s]+\\))" "\\1" text))
+         (without-code (replace-regexp-in-string "`\\([^`]+\\)`" "\\1" without-links))
+         (trimmed (string-trim (downcase without-code)))
+         (slug (replace-regexp-in-string "[^[:alnum:][:multibyte:]]+" "-" trimmed)))
+    (setq slug (replace-regexp-in-string "\\`-+\\|-+\\'" "" slug))
+    (if (string-empty-p slug) "heading" slug)))
+
+(defun md-html-peek--render-heading-list (headings)
+  "Render HEADINGS as the side heading list."
+  (concat
+   "<aside class=\"md-html-peek-toc\" aria-label=\"見出しリスト\">\n"
+   "<nav>\n<ol class=\"toc-list\">\n"
+   (mapconcat
+    (lambda (heading)
+      (let ((level (plist-get heading :level)))
+        (format
+         "<li class=\"toc-item\" data-level=\"%d\"><a href=\"#%s\">%s</a></li>"
+         level
+         (md-html-peek--escape-html-attribute (plist-get heading :id))
+         (md-html-peek--inline (plist-get heading :text)))))
+    headings
+    "\n")
+   "\n</ol>\n</nav>\n</aside>\n"))
 
 (defun md-html-peek--indent-width (indent)
   "Return display width for Markdown list INDENT."
@@ -409,6 +480,10 @@ unconsumed lines."
     (setq escaped (replace-regexp-in-string "\"" "&quot;" escaped t t))
     escaped))
 
+(defun md-html-peek--escape-html-attribute (text)
+  "Escape TEXT for use in an HTML attribute."
+  (md-html-peek--escape-html text))
+
 (defun md-html-peek--css ()
   "Return embedded CSS."
   (let ((dark (eq md-html-peek-css-theme 'dark)))
@@ -419,8 +494,22 @@ unconsumed lines."
        "  color-scheme: light; --bg: #f6f7f8; --paper: #ffffff; --text: #24292f; --muted: #6e7781; --line: #d8dee4; --soft: #f1f4f7; --accent: #0969da; --code: #f6f8fa;\n")
      "}\n"
      "body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.72 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }\n"
-     ".md-html-peek-document { box-sizing: border-box; max-width: 880px; margin: 32px auto; padding: 40px 48px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }\n"
+     ".md-html-peek-shell { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 880px); gap: 24px; align-items: start; max-width: 1220px; margin: 32px auto; padding: 0 24px; }\n"
+     ".md-html-peek-document { box-sizing: border-box; width: 100%; min-width: 0; padding: 40px 48px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }\n"
+     ".md-html-peek-shell > .md-html-peek-document:only-child { grid-column: 1 / -1; max-width: 880px; margin: 0 auto; }\n"
+     ".md-html-peek-toc { position: sticky; top: 16px; box-sizing: border-box; max-height: calc(100vh - 32px); overflow: auto; padding: 18px 16px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; line-height: 1.45; }\n"
+     ".toc-list { list-style: none; margin: 0; padding: 0; }\n"
+     ".toc-item { margin: 2px 0; padding-left: calc((var(--toc-level) - 1) * 14px); }\n"
+     ".toc-item[data-level=\"1\"] { --toc-level: 1; }\n"
+     ".toc-item[data-level=\"2\"] { --toc-level: 2; }\n"
+     ".toc-item[data-level=\"3\"] { --toc-level: 3; }\n"
+     ".toc-item[data-level=\"4\"] { --toc-level: 4; }\n"
+     ".toc-item[data-level=\"5\"] { --toc-level: 5; }\n"
+     ".toc-item[data-level=\"6\"] { --toc-level: 6; }\n"
+     ".toc-item a { display: block; padding: 2px 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }\n"
+     ".toc-item a:hover { color: var(--accent); text-decoration: underline; }\n"
      ".document-meta { margin-bottom: 24px; color: var(--muted); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }\n"
+     "h1, h2, h3, h4, h5, h6 { scroll-margin-top: 24px; }\n"
      "h1, h2, h3, h4, h5, h6 { line-height: 1.28; margin: 1.8em 0 .65em; font-weight: 700; }\n"
      "h1 { font-size: 2rem; border-bottom: 1px solid var(--line); padding-bottom: .25em; }\n"
      "h2 { font-size: 1.55rem; border-bottom: 1px solid var(--line); padding-bottom: .2em; }\n"
@@ -439,8 +528,8 @@ unconsumed lines."
      "img { max-width: 100%; height: auto; border-radius: 6px; }\n"
      ".md-marker { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82em; font-weight: 600; user-select: text; }\n"
      ".thematic-break { margin: 1.8em 0; border: 0; border-top: 1px solid var(--line); height: 0; }\n"
-     "@media (max-width: 760px) { .md-html-peek-document { margin: 0; border: 0; border-radius: 0; padding: 24px 20px; } body { background: var(--paper); } }\n"
-     "@media print { body { background: white; } .md-html-peek-document { margin: 0; border: 0; padding: 0; } a { color: inherit; } }\n")))
+     "@media (max-width: 900px) { .md-html-peek-shell { display: block; margin: 0; padding: 0; } .md-html-peek-toc { position: static; max-height: 40vh; border-width: 0 0 1px; border-radius: 0; } .md-html-peek-document { border: 0; border-radius: 0; padding: 24px 20px; } body { background: var(--paper); } }\n"
+     "@media print { body { background: white; } .md-html-peek-shell { display: block; margin: 0; padding: 0; } .md-html-peek-toc { display: none; } .md-html-peek-document { margin: 0; border: 0; padding: 0; } a { color: inherit; } }\n")))
 
 (provide 'md-html-peek)
 

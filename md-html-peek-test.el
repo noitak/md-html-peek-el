@@ -7,9 +7,29 @@
 
 (ert-deftest md-html-peek-renders-heading-with-marker ()
   (let ((html (md-html-peek-render-string "# Title" "sample.md")))
-    (should (string-match-p "<h1>" html))
+    (should (string-match-p "<h1 id=\"title\">" html))
     (should (string-match-p "md-marker\">#" html))
     (should (string-match-p "Title</h1>" html))))
+
+(ert-deftest md-html-peek-renders-heading-list-with-links ()
+  (let ((html (md-html-peek-render-string "# Title\n\n## Child" "sample.md")))
+    (should (string-match-p "class=\"md-html-peek-toc\"" html))
+    (should (string-match-p "href=\"#title\"" html))
+    (should (string-match-p "href=\"#child\"" html))
+    (should-not (string-match-p "<button" html))
+    (should-not (string-match-p "<script>" html))
+    (should (string-match-p "<h2 id=\"child\">" html))))
+
+(ert-deftest md-html-peek-renders-unique-heading-ids ()
+  (let ((html (md-html-peek-render-string "# Same\n\n## Same" "sample.md")))
+    (should (string-match-p "<h1 id=\"same\">" html))
+    (should (string-match-p "<h2 id=\"same-2\">" html))
+    (should (string-match-p "href=\"#same-2\"" html))))
+
+(ert-deftest md-html-peek-ignores-code-fence-headings-in-heading-list ()
+  (let ((html (md-html-peek-render-string "# Real\n\n```\n# Not heading\n```" "sample.md")))
+    (should (string-match-p "href=\"#real\"" html))
+    (should-not (string-match-p "href=\"#not-heading\"" html))))
 
 (ert-deftest md-html-peek-renders-list-blockquote-and-code ()
   (let ((html (md-html-peek-render-string "- item\n\n> quote\n\n```elisp\n(message \"hi\")\n```" "sample.md")))
