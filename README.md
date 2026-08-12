@@ -38,10 +38,12 @@ M-x md-html-peek-open-buffer
 - Writes output to a temporary directory by default
 - Shows a clickable heading list on the left side of the HTML preview
 - Supports headings, paragraphs, unordered lists, ordered lists, blockquotes,
-  fenced code blocks, emphasis, links, images, horizontal rules, and tables
+  fenced code blocks, emphasis, links, images, horizontal rules, tables, and
+  YAML front matter
 - Shows structural markers, such as heading markers, in the HTML output
 - Renders lists, inline formatting, links, tables, and horizontal rules without
   showing their Markdown punctuation
+- Renders YAML front matter as a labeled, syntax-highlighted metadata block
 
 ## Configuration
 

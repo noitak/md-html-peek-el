@@ -105,8 +105,16 @@ This command does not require the buffer to be saved."
 
 (defun md-html-peek-render-string (markdown title)
   "Return a self-contained HTML document for MARKDOWN named TITLE."
-  (let* ((headings (md-html-peek--extract-headings markdown))
-         (body (md-html-peek--render-blocks (split-string markdown "\n") headings)))
+  (let* ((parts (md-html-peek--split-front-matter markdown))
+         (front-matter (car parts))
+         (body-lines (cdr parts))
+         (body-markdown (string-join body-lines "\n"))
+         (headings (md-html-peek--extract-headings body-markdown))
+         (body (concat
+                (if front-matter
+                    (md-html-peek--render-yaml-front-matter front-matter)
+                  "")
+                (md-html-peek--render-blocks body-lines headings))))
     (concat "<!doctype html>\n"
             "<html lang=\"ja\">\n"
             "<head>\n"
@@ -150,6 +158,99 @@ This command does not require the buffer to be saved."
          (dir (or md-html-peek-output-directory
                   (expand-file-name "md-html-peek/" temporary-file-directory))))
     (expand-file-name (concat safe-base ".html") dir)))
+
+(defun md-html-peek--split-front-matter (markdown)
+  "Return a cons cell of YAML front matter lines and body lines from MARKDOWN."
+  (let ((lines (split-string markdown "\n")))
+    (if (and lines (string-match-p "\\`---[[:space:]]*\\'" (car lines)))
+        (let ((rest (cdr lines))
+              (front-matter '())
+              (closed nil))
+          (while (and rest (not closed))
+            (let ((line (pop rest)))
+              (if (string-match-p "\\`---[[:space:]]*\\'" line)
+                  (setq closed t)
+                (push line front-matter))))
+          (if closed
+              (cons (nreverse front-matter) rest)
+            (cons nil lines)))
+      (cons nil lines))))
+
+(defun md-html-peek--render-yaml-front-matter (lines)
+  "Render YAML front matter LINES as HTML."
+  (concat
+   "<section class=\"yaml-front-matter\" aria-label=\"YAML フロントマター\">\n"
+   "<div class=\"yaml-front-matter-title\">YAML フロントマター</div>\n"
+   "<pre><code>"
+   (mapconcat #'md-html-peek--render-yaml-line lines "\n")
+   "</code></pre>\n"
+   "</section>\n"))
+
+(defun md-html-peek--render-yaml-line (line)
+  "Render one YAML front matter LINE with lightweight syntax highlighting."
+  (cond
+   ((string-match "\\`\\([[:space:]]*\\)\\(#.*\\)\\'" line)
+    (concat (md-html-peek--escape-html (match-string 1 line))
+            "<span class=\"yaml-comment\">"
+            (md-html-peek--escape-html (match-string 2 line))
+            "</span>"))
+   ((string-match "\\`\\([[:space:]]*\\)\\(-[[:space:]]+\\)?\\([^:#][^:]*\\):\\([[:space:]]*.*\\)?\\'" line)
+    (concat (md-html-peek--escape-html (match-string 1 line))
+            (if (match-string 2 line)
+                (concat "<span class=\"yaml-punctuation\">"
+                        (md-html-peek--escape-html (match-string 2 line))
+                        "</span>")
+              "")
+            "<span class=\"yaml-key\">"
+            (md-html-peek--escape-html (string-trim-right (match-string 3 line)))
+            "</span><span class=\"yaml-punctuation\">:</span>"
+            (md-html-peek--render-yaml-value (or (match-string 4 line) ""))))
+   ((string-match "\\`\\([[:space:]]*\\)-\\([[:space:]]+.*\\)?\\'" line)
+    (concat (md-html-peek--escape-html (match-string 1 line))
+            "<span class=\"yaml-punctuation\">-</span>"
+            (md-html-peek--render-yaml-value (or (match-string 2 line) ""))))
+   (t
+    (md-html-peek--escape-html line))))
+
+(defun md-html-peek--render-yaml-value (value)
+  "Render a YAML scalar VALUE with lightweight syntax highlighting."
+  (let* ((leading (if (string-match "\\`[[:space:]]*" value)
+                      (match-string 0 value)
+                    ""))
+         (scalar (string-trim-left value)))
+    (concat
+     (md-html-peek--escape-html leading)
+     (cond
+      ((string-empty-p scalar)
+       "")
+      ((string-match-p "\\`#.*\\'" scalar)
+       (concat "<span class=\"yaml-comment\">"
+               (md-html-peek--escape-html scalar)
+               "</span>"))
+      ((string-match-p "\\`\\(\".*\"\\|'.*'\\)\\([[:space:]]+#.*\\)?\\'" scalar)
+       (md-html-peek--render-yaml-scalar-with-comment scalar "yaml-string"))
+      ((string-match-p "\\`\\(true\\|false\\|null\\|~\\)\\([[:space:]]+#.*\\)?\\'" scalar)
+       (md-html-peek--render-yaml-scalar-with-comment scalar "yaml-literal"))
+      ((string-match-p "\\`[-+]?[0-9]+\\(\\.[0-9]+\\)?\\([[:space:]]+#.*\\)?\\'" scalar)
+       (md-html-peek--render-yaml-scalar-with-comment scalar "yaml-number"))
+      (t
+       (md-html-peek--escape-html scalar))))))
+
+(defun md-html-peek--render-yaml-scalar-with-comment (scalar class)
+  "Render YAML SCALAR using CLASS, keeping an optional trailing comment muted."
+  (if (string-match "\\`\\(.*?\\)\\([[:space:]]+#.*\\)\\'" scalar)
+      (concat "<span class=\"" class "\">"
+              (md-html-peek--escape-html (match-string 1 scalar))
+              "</span>"
+              (md-html-peek--escape-html
+               (replace-regexp-in-string "#.*\\'" "" (match-string 2 scalar)))
+              "<span class=\"yaml-comment\">"
+              (md-html-peek--escape-html
+               (replace-regexp-in-string "\\`[[:space:]]*" "" (match-string 2 scalar)))
+              "</span>")
+    (concat "<span class=\"" class "\">"
+            (md-html-peek--escape-html scalar)
+            "</span>")))
 
 (defun md-html-peek--render-blocks (lines headings)
   "Render Markdown LINES into HTML blocks."
@@ -490,8 +591,8 @@ unconsumed lines."
     (concat
      ":root {\n"
      (if dark
-         "  color-scheme: dark; --bg: #171717; --paper: #202124; --text: #eeeeee; --muted: #a5a5a5; --line: #3a3a3a; --soft: #2c2d2f; --accent: #7db7ff; --code: #25282c;\n"
-       "  color-scheme: light; --bg: #f6f7f8; --paper: #ffffff; --text: #24292f; --muted: #6e7781; --line: #d8dee4; --soft: #f1f4f7; --accent: #0969da; --code: #f6f8fa;\n")
+         "  color-scheme: dark; --bg: #171717; --paper: #202124; --text: #eeeeee; --muted: #a5a5a5; --line: #3a3a3a; --soft: #2c2d2f; --accent: #7db7ff; --code: #25282c; --yaml-string: #7ee787; --yaml-literal: #d2a8ff;\n"
+       "  color-scheme: light; --bg: #f6f7f8; --paper: #ffffff; --text: #24292f; --muted: #6e7781; --line: #d8dee4; --soft: #f1f4f7; --accent: #0969da; --code: #f6f8fa; --yaml-string: #227950; --yaml-literal: #8250df;\n")
      "}\n"
      "body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.72 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }\n"
      ".md-html-peek-shell { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 880px); gap: 24px; align-items: start; max-width: 1220px; margin: 32px auto; padding: 0 24px; }\n"
@@ -509,6 +610,15 @@ unconsumed lines."
      ".toc-item a { display: block; padding: 2px 0; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }\n"
      ".toc-item a:hover { color: var(--accent); text-decoration: underline; }\n"
      ".document-meta { margin-bottom: 24px; color: var(--muted); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }\n"
+     ".yaml-front-matter { margin: 0 0 1.5em; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--soft); }\n"
+     ".yaml-front-matter-title { padding: 8px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font: 700 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; text-transform: uppercase; }\n"
+     ".yaml-front-matter pre { margin: 0; border: 0; border-radius: 0; background: transparent; }\n"
+     ".yaml-front-matter code { font-size: .9em; }\n"
+     ".yaml-key { color: var(--accent); font-weight: 700; }\n"
+     ".yaml-punctuation { color: var(--muted); }\n"
+     ".yaml-string { color: var(--yaml-string); }\n"
+     ".yaml-number, .yaml-literal { color: var(--yaml-literal); }\n"
+     ".yaml-comment { color: var(--muted); font-style: italic; }\n"
      "h1, h2, h3, h4, h5, h6 { scroll-margin-top: 24px; }\n"
      "h1, h2, h3, h4, h5, h6 { line-height: 1.28; margin: 1.8em 0 .65em; font-weight: 700; }\n"
      "h1 { font-size: 2rem; border-bottom: 1px solid var(--line); padding-bottom: .25em; }\n"

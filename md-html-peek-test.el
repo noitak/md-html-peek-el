@@ -76,6 +76,22 @@
     (should (string-match-p "<hr class=\"thematic-break\">" html))
     (should-not (string-match-p "md-marker\">----" html))))
 
+(ert-deftest md-html-peek-renders-yaml-front-matter ()
+  (let ((html (md-html-peek-render-string
+               "---\ntitle: \"Sample\"\ndraft: false\ntags:\n  - emacs\n---\n# Title"
+               "sample.md")))
+    (should (string-match-p "class=\"yaml-front-matter\"" html))
+    (should (string-match-p "<span class=\"yaml-key\">title</span>" html))
+    (should (string-match-p "<span class=\"yaml-string\">&quot;Sample&quot;</span>" html))
+    (should (string-match-p "<span class=\"yaml-literal\">false</span>" html))
+    (should (string-match-p "<h1 id=\"title\">" html))
+    (should-not (string-match-p "<p>--- title:" html))))
+
+(ert-deftest md-html-peek-does-not-treat-unclosed-front-matter-as-yaml ()
+  (let ((html (md-html-peek-render-string "---\nnot front matter" "sample.md")))
+    (should-not (string-match-p "class=\"yaml-front-matter\"" html))
+    (should (string-match-p "<hr class=\"thematic-break\">" html))))
+
 (provide 'md-html-peek-test)
 
 ;;; md-html-peek-test.el ends here
