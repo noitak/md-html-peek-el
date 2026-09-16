@@ -19,6 +19,10 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(defvar md-html-peek--inline-renderer nil
+  "Optional inline renderer used by linked document previews.")
+
+
 (defgroup md-html-peek nil
   "Generate readable HTML previews from Markdown."
   :group 'text
@@ -56,6 +60,27 @@ When nil, use a temporary directory."
   "File extensions treated as Markdown."
   :type '(repeat string)
   :group 'md-html-peek)
+
+(declare-function md-html-peek-generate-linked "md-html-peek-linked" (file &optional root))
+
+;;;###autoload
+(defun md-html-peek-open-linked (&optional file root)
+  "Preview FILE and its linked Markdown documents in one HTML file.
+ROOT bounds collection; default to FILE's directory.  With a prefix argument,
+prompt for ROOT.  Read saved files, ignoring unsaved buffer changes."
+  (interactive
+   (let ((file (md-html-peek--read-markdown-file)))
+     (list file (when current-prefix-arg
+                  (read-directory-name "Collection root: "
+                                       (file-name-directory file))))))
+  (require 'md-html-peek-linked)
+  (let ((html-file (md-html-peek-generate-linked
+                    (or file (md-html-peek--read-markdown-file)) root)))
+    (when md-html-peek-open-after-generate
+      (browse-url-of-file html-file))
+    (message "Generated %s" html-file)
+    html-file))
+
 
 ;;;###autoload
 (defun md-html-peek-open (&optional file)
@@ -349,14 +374,24 @@ This command does not require the buffer to be saved."
         (let ((line (pop lines)))
           (cond
            (in-code
-            (if (string-match-p "\\`[[:space:]]*```[[:space:]]*\\'" line)
+            (if (md-html-peek--fence-close-p line in-code)
                 (flush-code)
               (push line code-lines)))
-           ((string-match "\\`[[:space:]]*```\\([^`]*\\)[[:space:]]*\\'" line)
-            (flush-open-blocks)
-            (setq in-code t
-                  code-lang (string-trim (match-string 1 line))
-                  code-lines nil))
+           ((and (not list-stack) (not paragraph)
+                 (string-match "\\`\\(?:    \\|\t\\)\\(.*\\)" line))
+            (let ((indented (list (match-string 1 line))))
+              (flush-open-blocks)
+              (while (and lines
+                          (string-match "\\`\\(?:    \\|\t\\)\\(.*\\)" (car lines)))
+                (push (match-string 1 (pop lines)) indented))
+              (emit (concat "<pre><code>"
+                            (md-html-peek--escape-html (string-join (nreverse indented) "\n"))
+                            "</code></pre>\n"))))
+           ((md-html-peek--fence-open line)
+            (let ((fence (match-string 1 line))
+                  (language (string-trim (match-string 2 line))))
+              (flush-open-blocks)
+              (setq in-code fence code-lang language code-lines nil)))
            ((string-match-p "\\`[[:space:]]*\\'" line)
             (flush-open-blocks))
            ((md-html-peek--table-start-p line lines)
@@ -408,6 +443,17 @@ This command does not require the buffer to be saved."
       (flush-open-blocks)
       (apply #'concat (nreverse html)))))
 
+(defun md-html-peek--fence-open (line)
+  "Return the opening code fence in LINE, or nil."
+  (when (string-match "\\`[[:space:]]*\\(`\\{3,\\}\\|~\\{3,\\}\\)\\(.*\\)\\'" line)
+    (match-string 1 line)))
+
+(defun md-html-peek--fence-close-p (line fence)
+  "Return non-nil if LINE closes FENCE."
+  (string-match-p
+   (concat "\\`[[:space:]]*" (regexp-quote (substring fence 0 1))
+           "\\{" (number-to-string (length fence)) ",\\}[[:space:]]*\\'") line))
+
 (defun md-html-peek--extract-headings (markdown)
   "Return heading metadata parsed from MARKDOWN."
   (let ((lines (split-string markdown "\n"))
@@ -417,10 +463,9 @@ This command does not require the buffer to be saved."
     (dolist (line lines (nreverse headings))
       (cond
        (in-code
-        (when (string-match-p "\\`[[:space:]]*```[[:space:]]*\\'" line)
+        (when (md-html-peek--fence-close-p line in-code)
           (setq in-code nil)))
-       ((string-match-p "\\`[[:space:]]*```\\([^`]*\\)[[:space:]]*\\'" line)
-        (setq in-code t))
+       ((setq in-code (md-html-peek--fence-open line)))
        ((and (string-match "\\`\\(#+\\)[[:space:]]+\\(.+\\)\\'" line)
              (<= (length (match-string 1 line)) 6))
         (let* ((level (length (match-string 1 line)))
@@ -431,11 +476,12 @@ This command does not require the buffer to be saved."
 (defun md-html-peek--unique-heading-id (text seen)
   "Return a unique HTML id for heading TEXT, recording it in SEEN."
   (let* ((base (md-html-peek--slugify text))
-         (count (gethash base seen 0)))
-    (puthash base (1+ count) seen)
-    (if (zerop count)
-        base
-      (format "%s-%d" base (1+ count)))))
+         (id base)
+         (count 1))
+    (while (gethash id seen)
+      (setq count (1+ count) id (format "%s-%d" base count)))
+    (puthash id t seen)
+    id))
 
 (defun md-html-peek--slugify (text)
   "Return a readable slug for heading TEXT."
@@ -459,7 +505,9 @@ This command does not require the buffer to be saved."
          "<li class=\"toc-item\" data-level=\"%d\"><a href=\"#%s\">%s</a></li>"
          level
          (md-html-peek--escape-html-attribute (plist-get heading :id))
-         (md-html-peek--inline (plist-get heading :text)))))
+         (replace-regexp-in-string
+          "</?a\\(?:[[:space:]][^>]*\\)?>" ""
+          (md-html-peek--inline (plist-get heading :text)) t t))))
     headings
     "\n")
    "\n</ol>\n</nav>\n</aside>\n"))
@@ -531,6 +579,12 @@ unconsumed lines."
 
 (defun md-html-peek--inline (text)
   "Render inline Markdown in TEXT."
+  (if md-html-peek--inline-renderer
+      (funcall md-html-peek--inline-renderer text)
+    (md-html-peek--inline-basic text)))
+
+(defun md-html-peek--inline-basic (text)
+  "Render inline Markdown in TEXT for single-file previews."
   (let ((result (md-html-peek--escape-html text)))
     (setq result (replace-regexp-in-string
                   "`\\([^`]+\\)`"
